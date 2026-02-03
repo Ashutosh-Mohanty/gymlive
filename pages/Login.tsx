@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { UserRole } from '../types';
 import { Input, Button, Card } from '../components/UI';
@@ -10,58 +11,68 @@ interface LoginProps {
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [role, setRole] = useState<UserRole>(UserRole.MANAGER);
   const [gymId, setGymId] = useState('GYM001');
-  const [username, setUsername] = useState(''); // Only used for Members/SuperAdmin
+  const [username, setUsername] = useState(''); 
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setLoading(true);
 
-    if (role === UserRole.SUPER_ADMIN) {
-        if (username === 'super' && password === 'admin') {
-            onLogin(UserRole.SUPER_ADMIN, { name: 'Platform Admin' });
+    try {
+      if (role === UserRole.SUPER_ADMIN) {
+          if (username === 'super' && password === 'admin') {
+              onLogin(UserRole.SUPER_ADMIN, { name: 'Platform Admin' });
+          } else {
+              setError('Invalid Super Admin credentials');
+          }
+          return;
+      }
+
+      const gyms = await getGyms();
+      const targetGym = gyms.find(g => g.id === gymId);
+
+      if (!targetGym) {
+          setError('Gym ID not found');
+          return;
+      }
+
+      if (targetGym.status === 'PAUSED') {
+          setError('This gym account is currently paused. Please contact support.');
+          return;
+      }
+
+      const isExpired = new Date(targetGym.subscriptionExpiry) < new Date();
+      // Fix: Removed redundant 'role !== UserRole.SUPER_ADMIN' check.
+      // Since we already handled and returned for UserRole.SUPER_ADMIN at the start of this function,
+      // TypeScript correctly identifies that 'role' can only be MANAGER or MEMBER here.
+      if (isExpired) {
+          setError('Platform subscription expired. Please contact Super Admin.');
+          return;
+      }
+
+      if (role === UserRole.MANAGER) {
+        if (password === targetGym.password) {
+          onLogin(UserRole.MANAGER, { ...targetGym, role: UserRole.MANAGER });
         } else {
-            setError('Invalid Super Admin credentials');
+          setError('Invalid Manager password');
         }
-        return;
-    }
-
-    const gyms = getGyms();
-    const targetGym = gyms.find(g => g.id === gymId);
-
-    if (!targetGym) {
-        setError('Gym ID not found');
-        return;
-    }
-
-    // Check platform status
-    if (targetGym.status === 'PAUSED') {
-        setError('This gym account is currently paused. Please contact support.');
-        return;
-    }
-
-    // Check platform subscription expiry
-    const isExpired = new Date(targetGym.subscriptionExpiry) < new Date();
-    if (isExpired && role !== UserRole.SUPER_ADMIN) {
-        setError('Platform subscription expired. Please contact Super Admin.');
-        return;
-    }
-
-    if (role === UserRole.MANAGER) {
-      if (password === targetGym.password) {
-        onLogin(UserRole.MANAGER, { ...targetGym, role: UserRole.MANAGER });
-      } else {
-        setError('Invalid Manager password');
+      } else if (role === UserRole.MEMBER) {
+        const members = await getMembers(gymId);
+        const member = members.find(m => m.id === username || m.phone === username);
+        if (member && password === member.password) {
+          onLogin(UserRole.MEMBER, member);
+        } else {
+          setError('Invalid Member credentials');
+        }
       }
-    } else if (role === UserRole.MEMBER) {
-      const members = getMembers(gymId);
-      const member = members.find(m => m.id === username || m.phone === username);
-      if (member && password === member.password) {
-        onLogin(UserRole.MEMBER, member);
-      } else {
-        setError('Invalid Member credentials');
-      }
+    } catch (err) {
+      console.error(err);
+      setError('An error occurred during login. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -106,6 +117,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
               placeholder="e.g. GYM001" 
               value={gymId} 
               onChange={e => setGymId(e.target.value)}
+              disabled={loading}
             />
           )}
 
@@ -115,6 +127,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
               placeholder={role === UserRole.MEMBER ? "Enter mobile" : "Enter super admin username"}
               value={username} 
               onChange={e => setUsername(e.target.value)}
+              disabled={loading}
             />
           )}
 
@@ -124,6 +137,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
             placeholder="Enter password"
             value={password} 
             onChange={e => setPassword(e.target.value)}
+            disabled={loading}
           />
 
           {error && (
@@ -132,13 +146,13 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
             </div>
           )}
 
-          <Button type="submit" className="w-full" size="lg">
+          <Button type="submit" className="w-full" size="lg" isLoading={loading}>
             Login as {role.replace('_', ' ').toLowerCase()}
           </Button>
           
           <div className="flex flex-col gap-2 mt-4">
             <div className="text-center text-[10px] text-slate-500">
-               Demo: Manager (GYM001 / admin) | Member (Check manager dashboard)
+               Cloud Integrated: Data persists via Supabase
             </div>
             
             {role !== UserRole.SUPER_ADMIN ? (

@@ -1,41 +1,50 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useAuth } from '../App';
-import { Member, Gym, TransactionCategory } from '../types';
+import { Member, Gym, TransactionCategory, PaymentRecord } from '../types';
 import { Card, Badge, Button } from '../components/UI';
 import { getMemberStatus, getTransactions, getGyms } from '../services/storage';
 import { getAIWorkoutTip } from '../services/geminiService';
 
 const MemberDashboard: React.FC = () => {
   const { authState } = useAuth();
-  const member = authState.user as Member;
-  const status = getMemberStatus(member.expiryDate);
+  const initialMember = authState.user as Member;
+  const [member, setMember] = useState<Member>(initialMember);
+  const [gym, setGym] = useState<Gym | null>(null);
+  const [transactions, setTransactions] = useState<PaymentRecord[]>([]);
   const [tip, setTip] = useState<string>('');
+  const [loading, setLoading] = useState(true);
 
-  // Get gym info for terms and conditions
-  const gym = useMemo(() => {
-    const gyms = getGyms();
-    return gyms.find(g => g.id === member.gymId);
-  }, [member.gymId]);
+  const refreshData = async () => {
+    if (!member) return;
+    setLoading(true);
+    try {
+      const [gyms, txs] = await Promise.all([
+        getGyms(),
+        getTransactions(member.gymId)
+      ]);
+      const currentGym = gyms.find(g => g.id === member.gymId);
+      setGym(currentGym || null);
+      
+      const memberTxs = txs.filter(t => t.details?.includes(member.name) || t.details?.includes(member.id));
+      setTransactions(memberTxs);
+
+      const daysActive = Math.ceil((new Date().getTime() - new Date(member.joinDate).getTime()) / (1000 * 3600 * 24));
+      const aiTip = await getAIWorkoutTip(daysActive);
+      setTip(aiTip);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    // Generate a quick AI tip on load
-    const fetchTip = async () => {
-        const daysActive = Math.ceil((new Date().getTime() - new Date(member.joinDate).getTime()) / (1000 * 3600 * 24));
-        const t = await getAIWorkoutTip(daysActive);
-        setTip(t);
-    };
-    if (member) fetchTip();
-  }, [member?.joinDate]);
-
-  const transactions = useMemo(() => {
-    if (!member) return [];
-    // Get transactions for this gym and filter for this member by details string
-    const all = getTransactions(member.gymId);
-    return all.filter(t => t.details?.includes(member.name) || t.details?.includes(member.id));
-  }, [member]);
+    refreshData();
+  }, [member?.id]);
 
   if (!member) return <div className="p-10 text-center text-slate-500">Loading member data...</div>;
 
+  const status = getMemberStatus(member.expiryDate);
   const daysLeft = Math.ceil((new Date(member.expiryDate).getTime() - new Date().getTime()) / (1000 * 3600 * 24));
 
   return (
@@ -85,113 +94,122 @@ const MemberDashboard: React.FC = () => {
         </div>
       </Card>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
-          {/* Transformation Progress */}
-          <Card title="My Transformation Journey">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="space-y-2">
-                  <p className="text-xs text-slate-500 uppercase font-bold text-center">Before</p>
-                  <div className="h-64 bg-slate-900 rounded-xl overflow-hidden border border-slate-800 shadow-inner relative group">
-                    {member.transformationPhotos.before ? (
-                        <img src={member.transformationPhotos.before} className="w-full h-full object-cover" alt="Before" />
-                    ) : (
-                        <div className="flex flex-col items-center justify-center h-full text-slate-700 italic text-sm">
-                          No "Before" photo uploaded.
-                        </div>
-                    )}
-                  </div>
-              </div>
-              <div className="space-y-2">
-                  <p className="text-xs text-slate-500 uppercase font-bold text-center">Current / After</p>
-                  <div className="h-64 bg-slate-900 rounded-xl overflow-hidden border border-slate-800 shadow-inner relative group">
-                    {member.transformationPhotos.after ? (
-                        <img src={member.transformationPhotos.after} className="w-full h-full object-cover" alt="After" />
-                    ) : (
-                        <div className="flex flex-col items-center justify-center h-full text-slate-700 italic text-sm">
-                          No "After" photo uploaded.
-                        </div>
-                    )}
-                  </div>
-              </div>
-            </div>
-          </Card>
+      {loading && (
+        <div className="text-center py-10">
+          <i className="fas fa-circle-notch fa-spin text-2xl text-gym-accent mb-2"></i>
+          <p className="text-xs text-slate-500">Syncing profile...</p>
+        </div>
+      )}
 
-          {/* Payment History */}
-          <Card title="Membership Payments">
-              {transactions && transactions.length > 0 ? (
-                  <div className="overflow-hidden rounded-lg border border-slate-800">
-                      <table className="w-full text-left text-sm">
-                        <thead className="bg-slate-900/80 text-slate-500 uppercase text-[10px] tracking-widest font-bold">
-                          <tr>
-                              <th className="p-3">Date</th>
-                              <th className="p-3">Details</th>
-                              <th className="p-3 text-right">Amount</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-800">
-                          {transactions.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(tx => (
-                              <tr key={tx.id} className="hover:bg-slate-800/30 transition-colors">
-                                <td className="p-3 text-slate-400">{new Date(tx.date).toLocaleDateString()}</td>
-                                <td className="p-3 text-slate-200 text-xs">{tx.details}</td>
-                                <td className="p-3 text-right font-bold text-white font-mono">₹{tx.amount}</td>
-                              </tr>
-                          ))}
-                        </tbody>
-                      </table>
+      {!loading && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-6">
+            {/* Transformation Progress */}
+            <Card title="My Transformation Journey">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-2">
+                    <p className="text-xs text-slate-500 uppercase font-bold text-center">Before</p>
+                    <div className="h-64 bg-slate-900 rounded-xl overflow-hidden border border-slate-800 shadow-inner relative group">
+                      {member.transformationPhotos.before ? (
+                          <img src={member.transformationPhotos.before} className="w-full h-full object-cover" alt="Before" />
+                      ) : (
+                          <div className="flex flex-col items-center justify-center h-full text-slate-700 italic text-sm">
+                            No "Before" photo uploaded.
+                          </div>
+                      )}
+                    </div>
+                </div>
+                <div className="space-y-2">
+                    <p className="text-xs text-slate-500 uppercase font-bold text-center">Current / After</p>
+                    <div className="h-64 bg-slate-900 rounded-xl overflow-hidden border border-slate-800 shadow-inner relative group">
+                      {member.transformationPhotos.after ? (
+                          <img src={member.transformationPhotos.after} className="w-full h-full object-cover" alt="After" />
+                      ) : (
+                          <div className="flex flex-col items-center justify-center h-full text-slate-700 italic text-sm">
+                            No "After" photo uploaded.
+                          </div>
+                      )}
+                    </div>
+                </div>
+              </div>
+            </Card>
+
+            {/* Payment History */}
+            <Card title="Membership Payments">
+                {transactions && transactions.length > 0 ? (
+                    <div className="overflow-hidden rounded-lg border border-slate-800">
+                        <table className="w-full text-left text-sm">
+                          <thead className="bg-slate-900/80 text-slate-500 uppercase text-[10px] tracking-widest font-bold">
+                            <tr>
+                                <th className="p-3">Date</th>
+                                <th className="p-3">Details</th>
+                                <th className="p-3 text-right">Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800">
+                            {transactions.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(tx => (
+                                <tr key={tx.id} className="hover:bg-slate-800/30 transition-colors">
+                                  <td className="p-3 text-slate-400">{new Date(tx.date).toLocaleDateString()}</td>
+                                  <td className="p-3 text-slate-200 text-xs">{tx.details}</td>
+                                  <td className="p-3 text-right font-bold text-white font-mono">₹{tx.amount}</td>
+                                </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                    </div>
+                ) : (
+                    <div className="text-slate-500 text-sm italic py-4 text-center">No payment history found.</div>
+                )}
+            </Card>
+          </div>
+
+          <div className="space-y-6">
+            {/* AI Trainer Tip */}
+            <Card className="border-l-4 border-l-gym-accent bg-gym-card/50 shadow-lg relative overflow-hidden">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2 mb-2">
+                  <i className="fas fa-bolt text-gym-accent"></i> Today's Insight
+              </h3>
+              <p className="text-slate-300 italic text-sm leading-relaxed">"{tip || 'Analyzing progress...'}"</p>
+            </Card>
+
+            {/* Supplement Billing */}
+            <Card title="Supplements">
+              {member.supplementBills && member.supplementBills.length > 0 ? (
+                  <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
+                    {member.supplementBills.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(bill => (
+                        <div key={bill.id} className="p-3 bg-slate-800/50 rounded-lg border border-slate-700 flex justify-between items-center group hover:border-orange-500/30 transition-all">
+                          <div>
+                              <div className="text-white font-bold text-xs">{bill.itemName}</div>
+                              <div className="text-[9px] text-slate-500">{new Date(bill.date).toLocaleDateString()}</div>
+                          </div>
+                          <div className="text-orange-400 font-mono font-bold text-sm">₹{bill.amount}</div>
+                        </div>
+                    ))}
                   </div>
               ) : (
-                  <div className="text-slate-500 text-sm italic py-4 text-center">No payment history found.</div>
+                  <div className="text-slate-500 text-xs italic py-2 text-center">No purchases.</div>
               )}
-          </Card>
+            </Card>
+
+            {/* Gym Specific Terms & Conditions */}
+            <Card title="Gym Policy & Terms">
+               <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800">
+                  <div className="text-xs text-slate-400 whitespace-pre-wrap leading-relaxed max-h-80 overflow-y-auto">
+                     {gym?.termsAndConditions || 'Standard gym policies apply. Please consult the manager for details.'}
+                  </div>
+               </div>
+               <div className="mt-4 flex flex-col gap-2">
+                  <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Branch Info</p>
+                  <div className="text-xs text-slate-400">
+                     <p className="font-bold text-white mb-1">{gym?.name}</p>
+                     <p className="mb-1"><i className="fas fa-map-marker-alt mr-2"></i>{gym?.address}, {gym?.city}</p>
+                     <p><i className="fas fa-id-card mr-2"></i>Reg: {gym?.idProof || gym?.id}</p>
+                  </div>
+               </div>
+            </Card>
+          </div>
         </div>
-
-        <div className="space-y-6">
-          {/* AI Trainer Tip */}
-          <Card className="border-l-4 border-l-gym-accent bg-gym-card/50 shadow-lg relative overflow-hidden">
-            <h3 className="text-sm font-bold text-white flex items-center gap-2 mb-2">
-                <i className="fas fa-bolt text-gym-accent"></i> Today's Insight
-            </h3>
-            <p className="text-slate-300 italic text-sm leading-relaxed">"{tip || 'Analyzing progress...'}"</p>
-          </Card>
-
-          {/* Supplement Billing */}
-          <Card title="Supplements">
-            {member.supplementBills && member.supplementBills.length > 0 ? (
-                <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
-                  {member.supplementBills.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(bill => (
-                      <div key={bill.id} className="p-3 bg-slate-800/50 rounded-lg border border-slate-700 flex justify-between items-center group hover:border-orange-500/30 transition-all">
-                        <div>
-                            <div className="text-white font-bold text-xs">{bill.itemName}</div>
-                            <div className="text-[9px] text-slate-500">{new Date(bill.date).toLocaleDateString()}</div>
-                        </div>
-                        <div className="text-orange-400 font-mono font-bold text-sm">₹{bill.amount}</div>
-                      </div>
-                  ))}
-                </div>
-            ) : (
-                <div className="text-slate-500 text-xs italic py-2 text-center">No purchases.</div>
-            )}
-          </Card>
-
-          {/* Gym Specific Terms & Conditions */}
-          <Card title="Gym Policy & Terms">
-             <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800">
-                <div className="text-xs text-slate-400 whitespace-pre-wrap leading-relaxed max-h-80 overflow-y-auto">
-                   {gym?.termsAndConditions || 'Standard gym policies apply. Please consult the manager for details.'}
-                </div>
-             </div>
-             <div className="mt-4 flex flex-col gap-2">
-                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Branch Info</p>
-                <div className="text-xs text-slate-400">
-                   <p className="font-bold text-white mb-1">{gym?.name}</p>
-                   <p className="mb-1"><i className="fas fa-map-marker-alt mr-2"></i>{gym?.address}, {gym?.city}</p>
-                   <p><i className="fas fa-id-card mr-2"></i>Reg: {gym?.idProof || gym?.id}</p>
-                </div>
-             </div>
-          </Card>
-        </div>
-      </div>
+      )}
     </div>
   );
 };

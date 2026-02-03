@@ -1,91 +1,139 @@
-import { Member, Trainer, PaymentRecord, GymSettings, Gym, UserRole, TransactionCategory } from '../types';
 
-const MEMBERS_KEY = 'gym_members';
-const SETTINGS_KEY = 'gym_settings';
-const TRAINERS_KEY = 'gym_trainers';
-const GYMS_KEY = 'gym_master_list';
-const TRANSACTIONS_KEY = 'gym_transactions';
+import { Member, PaymentRecord, Gym, TransactionCategory } from '../types';
+import { supabase } from './supabase';
 
+// Helper to calculate expiry dates
 export const calculateExpiry = (startDate: string, days: number): string => {
   const date = new Date(startDate);
   date.setDate(date.getDate() + days);
   return date.toISOString();
 };
 
-const INITIAL_GYMS: Gym[] = [
-  {
-    id: 'GYM001',
-    name: 'Iron Paradise',
-    address: '123 Muscle Street, BKC',
-    city: 'Mumbai',
-    idProof: 'REG-12345-IN',
-    password: 'admin',
-    status: 'ACTIVE',
-    createdAt: new Date().toISOString(),
-    subscriptionPlanDays: 365,
-    subscriptionExpiry: calculateExpiry(new Date().toISOString(), 365),
-    termsAndConditions: '1. Membership is non-refundable. 2. Proper gym attire is required. 3. Re-rack weights after use.',
-    pricing: { 
-      oneMonth: 1500, 
-      twoMonths: 2800, 
-      threeMonths: 4000, 
-      sixMonths: 7000, 
-      twelveMonths: 12000 
-    },
-    subscriptionDue: 0,
-    lastPaymentDate: new Date().toISOString()
+// --- Gym Mapping Helpers ---
+const mapGymFromDb = (g: any): Gym => ({
+  id: g.id,
+  name: g.name,
+  address: g.address,
+  city: g.city,
+  idProof: g.id_proof,
+  password: g.password,
+  status: g.status,
+  createdAt: g.created_at,
+  subscriptionPlanDays: g.subscription_plan_days,
+  subscriptionExpiry: g.subscription_expiry,
+  termsAndConditions: g.terms_and_conditions,
+  pricing: g.pricing || { oneMonth: 0, twoMonths: 0, threeMonths: 0, sixMonths: 0, twelveMonths: 0 },
+  subscriptionDue: g.subscription_due || 0,
+  lastPaymentDate: g.last_payment_date
+});
+
+const mapGymToDb = (gym: Gym) => ({
+  id: gym.id,
+  name: gym.name,
+  address: gym.address,
+  city: gym.city,
+  id_proof: gym.idProof,
+  password: gym.password,
+  status: gym.status,
+  created_at: gym.createdAt,
+  subscription_plan_days: gym.subscriptionPlanDays,
+  subscription_expiry: gym.subscriptionExpiry,
+  terms_and_conditions: gym.termsAndConditions,
+  pricing: gym.pricing,
+  subscription_due: gym.subscriptionDue,
+  last_payment_date: gym.lastPaymentDate
+});
+
+// --- Member Mapping Helpers ---
+const mapMemberFromDb = (m: any): Member => ({
+  id: m.id,
+  password: m.password,
+  name: m.name,
+  phone: m.phone,
+  joinDate: m.join_date,
+  planDurationDays: m.plan_duration_days,
+  expiryDate: m.expiry_date,
+  age: m.age,
+  weight: m.weight,
+  height: m.height,
+  address: m.address,
+  amountPaid: m.amount_paid,
+  profilePhoto: m.profile_photo,
+  gymId: m.gym_id,
+  isActive: m.is_active,
+  transformationPhotos: m.transformation_photos || {},
+  supplementBills: m.supplement_bills || [],
+  paymentHistory: m.payment_history || []
+});
+
+const mapMemberToDb = (member: Member) => ({
+  id: member.id,
+  password: member.password,
+  name: member.name,
+  phone: member.phone,
+  join_date: member.joinDate,
+  plan_duration_days: member.planDurationDays,
+  expiry_date: member.expiryDate,
+  age: member.age,
+  weight: member.weight,
+  height: member.height,
+  address: member.address,
+  amount_paid: member.amountPaid,
+  profile_photo: member.profilePhoto,
+  gym_id: member.gymId,
+  is_active: member.isActive,
+  transformation_photos: member.transformationPhotos,
+  supplement_bills: member.supplementBills,
+  payment_history: member.paymentHistory
+});
+
+// --- API Methods ---
+
+export const getGyms = async (): Promise<Gym[]> => {
+  const { data, error } = await supabase.from('gyms').select('*');
+  if (error) {
+    console.error('Error fetching gyms:', error);
+    return [];
   }
-];
-
-export const getGyms = (): Gym[] => {
-  const data = localStorage.getItem(GYMS_KEY);
-  return data ? JSON.parse(data) : INITIAL_GYMS;
+  return (data || []).map(mapGymFromDb);
 };
 
-export const saveGyms = (gyms: Gym[]) => {
-  localStorage.setItem(GYMS_KEY, JSON.stringify(gyms));
+export const addGym = async (gym: Gym) => {
+  const { error } = await supabase.from('gyms').insert([mapGymToDb(gym)]);
+  if (error) throw error;
 };
 
-export const addGym = (gym: Gym) => {
-  const gyms = getGyms();
-  gyms.push(gym);
-  saveGyms(gyms);
+export const updateGym = async (updatedGym: Gym) => {
+  const { error } = await supabase
+    .from('gyms')
+    .update(mapGymToDb(updatedGym))
+    .eq('id', updatedGym.id);
+  if (error) throw error;
 };
 
-export const updateGym = (updatedGym: Gym) => {
-  const gyms = getGyms();
-  const index = gyms.findIndex(g => g.id === updatedGym.id);
-  if (index !== -1) {
-    gyms[index] = updatedGym;
-    saveGyms(gyms);
+export const deleteGym = async (id: string) => {
+  const { error } = await supabase.from('gyms').delete().eq('id', id);
+  if (error) throw error;
+};
+
+export const getMembers = async (gymId?: string): Promise<Member[]> => {
+  let query = supabase.from('members').select('*');
+  if (gymId) {
+    query = query.eq('gym_id', gymId);
   }
+  const { data, error } = await query;
+  if (error) {
+    console.error('Error fetching members:', error);
+    return [];
+  }
+  return (data || []).map(mapMemberFromDb);
 };
 
-export const getMembers = (gymId?: string): Member[] => {
-  const data = localStorage.getItem(MEMBERS_KEY);
-  if (!data) return [];
-  const members: Member[] = JSON.parse(data);
-  if (gymId) return members.filter(m => String(m.gymId) === String(gymId));
-  return members;
-};
+export const addMember = async (member: Member) => {
+  const { error: memberError } = await supabase.from('members').insert([mapMemberToDb(member)]);
+  if (memberError) throw memberError;
 
-export const getTrainers = (gymId?: string): Trainer[] => {
-  const data = localStorage.getItem(TRAINERS_KEY);
-  const trainers: Trainer[] = data ? JSON.parse(data) : [];
-  if (gymId) return trainers.filter(t => t.gymId === gymId);
-  return trainers;
-};
-
-export const saveMembers = (members: Member[]) => {
-  localStorage.setItem(MEMBERS_KEY, JSON.stringify(members));
-};
-
-export const addMember = (member: Member) => {
-  const allMembers = getMembers();
-  allMembers.push(member);
-  saveMembers(allMembers);
-  
-  recordTransaction(member.gymId, {
+  await recordTransaction(member.gymId, {
     id: `TX-${Date.now()}`,
     date: member.joinDate,
     amount: member.amountPaid,
@@ -96,31 +144,49 @@ export const addMember = (member: Member) => {
   });
 };
 
-export const updateMember = (updatedMember: Member) => {
-  const members = getMembers();
-  const index = members.findIndex(m => m.id === updatedMember.id);
-  if (index !== -1) {
-    members[index] = updatedMember;
-    saveMembers(members);
+export const updateMember = async (updatedMember: Member) => {
+  const { error } = await supabase
+    .from('members')
+    .update(mapMemberToDb(updatedMember))
+    .eq('id', updatedMember.id);
+  if (error) throw error;
+};
+
+export const deleteMember = async (id: string) => {
+  const { error } = await supabase.from('members').delete().eq('id', id);
+  if (error) throw error;
+};
+
+export const getTransactions = async (gymId: string): Promise<PaymentRecord[]> => {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('*')
+    .eq('gym_id', gymId);
+  
+  if (error) {
+    console.error('Error fetching transactions:', error);
+    return [];
   }
+  return (data || []).map(t => ({
+    ...t,
+    recordedBy: t.recorded_by
+  })) as PaymentRecord[];
 };
 
-export const getTransactions = (gymId: string): PaymentRecord[] => {
-  const data = localStorage.getItem(TRANSACTIONS_KEY);
-  const all: (PaymentRecord & { gymId: string })[] = data ? JSON.parse(data) : [];
-  return all.filter(t => String(t.gymId) === String(gymId));
-};
+export const recordTransaction = async (gymId: string, transaction: PaymentRecord) => {
+  const transactionData = {
+    id: transaction.id,
+    date: transaction.date,
+    amount: transaction.amount,
+    method: transaction.method,
+    recorded_by: transaction.recordedBy,
+    category: transaction.category,
+    details: transaction.details,
+    gym_id: gymId
+  };
 
-export const recordTransaction = (gymId: string, transaction: PaymentRecord) => {
-  const data = localStorage.getItem(TRANSACTIONS_KEY);
-  const all: (PaymentRecord & { gymId: string })[] = data ? JSON.parse(data) : [];
-  all.push({ ...transaction, gymId });
-  localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(all));
-};
-
-export const getSettings = (): GymSettings => {
-  const data = localStorage.getItem(SETTINGS_KEY);
-  return data ? JSON.parse(data) : { autoNotifyWhatsApp: false, gymName: 'GymPro' };
+  const { error } = await supabase.from('transactions').insert([transactionData]);
+  if (error) throw error;
 };
 
 export const getMemberStatus = (expiryDate: string): 'ACTIVE' | 'EXPIRED' | 'EXPIRING_SOON' => {

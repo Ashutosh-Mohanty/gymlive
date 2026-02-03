@@ -1,7 +1,6 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { Member, Gym, TransactionCategory, PaymentRecord, SupplementBill } from '../types';
-import { getMembers, saveMembers, addMember, getMemberStatus, updateMember, getTransactions, recordTransaction, updateGym } from '../services/storage';
+import { getMembers, addMember, getMemberStatus, updateMember, getTransactions, recordTransaction, updateGym } from '../services/storage';
 import { Button, Input, Card, Modal, Select, Badge } from '../components/UI';
 import { useAuth } from '../App';
 import { generateWhatsAppMessage } from '../services/geminiService';
@@ -12,6 +11,8 @@ const ManagerDashboard: React.FC = () => {
   
   const [activeTab, setActiveTab] = useState<'MEMBERS' | 'FINANCIALS' | 'SETTINGS'>('MEMBERS');
   const [members, setMembers] = useState<Member[]>([]);
+  const [transactions, setTransactions] = useState<PaymentRecord[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'ALL' | 'ACTIVE' | 'EXPIRED' | 'EXPIRING_SOON'>('ALL');
   const [filterDuration, setFilterDuration] = useState<number | 'ALL'>('ALL');
@@ -22,9 +23,10 @@ const ManagerDashboard: React.FC = () => {
   const [manualExtendDays, setManualExtendDays] = useState<string>('');
   const [manualExtendAmount, setManualExtendAmount] = useState<string>('');
   const [isSendingWhatsApp, setIsSendingWhatsApp] = useState<string | null>(null);
+  const [processing, setProcessing] = useState(false);
 
   // Gym Settings state
-  const [gymTerms, setGymTerms] = useState(gym.termsAndConditions || '');
+  const [gymTerms, setGymTerms] = useState(gym?.termsAndConditions || '');
 
   // Financial Range Filter
   const [finRange, setFinRange] = useState<'TODAY' | 'MONTH' | 'RANGE' | 'SPECIFIC'>('MONTH');
@@ -39,13 +41,26 @@ const ManagerDashboard: React.FC = () => {
   // Supplement Form state
   const [suppForm, setSuppForm] = useState({ itemName: '', qty: 1, days: 0, amount: 0 });
 
-  useEffect(() => {
-    if (gym?.id) {
-      setMembers(getMembers(gym.id));
+  const refreshData = async () => {
+    if (!gym?.id) return;
+    setLoading(true);
+    try {
+      const [fetchedMembers, fetchedTransactions] = await Promise.all([
+        getMembers(gym.id),
+        getTransactions(gym.id)
+      ]);
+      setMembers(fetchedMembers);
+      setTransactions(fetchedTransactions);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
     }
-  }, [gym?.id]);
+  };
 
-  const transactions = useMemo(() => getTransactions(gym.id), [members, gym?.id]);
+  useEffect(() => {
+    refreshData();
+  }, [gym?.id]);
 
   const filteredMembers = useMemo(() => {
     return members.filter(m => {
@@ -57,139 +72,174 @@ const ManagerDashboard: React.FC = () => {
     });
   }, [members, searchTerm, filterStatus, filterDuration]);
 
-  const handleUpdateGymTerms = () => {
-    const updated = { ...gym, termsAndConditions: gymTerms };
-    updateGym(updated);
-    alert('Gym Terms Updated Successfully');
+  const handleUpdateGymTerms = async () => {
+    setProcessing(true);
+    try {
+      const updated = { ...gym, termsAndConditions: gymTerms };
+      await updateGym(updated);
+      alert('Gym Terms Updated Successfully');
+    } catch (err) {
+      alert('Failed to update terms');
+    } finally {
+      setProcessing(false);
+    }
   };
 
-  const handleAddMember = (e: React.FormEvent) => {
+  const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault();
-    const joinDate = new Date(formData.joinDate);
-    const expiryDate = new Date(joinDate);
-    expiryDate.setDate(joinDate.getDate() + Number(formData.planDurationDays));
+    setProcessing(true);
+    try {
+      const joinDate = new Date(formData.joinDate);
+      const expiryDate = new Date(joinDate);
+      expiryDate.setDate(joinDate.getDate() + Number(formData.planDurationDays));
 
-    const newMember: Member = {
-      id: formData.id || formData.phone, 
-      name: formData.name,
-      phone: formData.phone,
-      password: formData.password,
-      joinDate: joinDate.toISOString(),
-      planDurationDays: Number(formData.planDurationDays),
-      expiryDate: expiryDate.toISOString(),
-      age: Number(formData.age),
-      weight: Number(formData.weight),
-      height: Number(formData.height),
-      address: formData.address,
-      amountPaid: Number(formData.amountPaid),
-      profilePhoto: formData.profilePhoto,
-      gymId: gym.id,
-      isActive: true,
-      transformationPhotos: {},
-      supplementBills: [],
-      paymentHistory: []
-    };
-
-    addMember(newMember);
-    setMembers(getMembers(gym.id));
-    setIsAddModalOpen(false);
-    setFormData(initialFormState);
-  };
-
-  const updateMemberProfile = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedMember) return;
-    const updated = { 
-        ...selectedMember, 
+      const newMember: Member = {
+        id: formData.id || formData.phone, 
         name: formData.name,
+        phone: formData.phone,
+        password: formData.password,
+        joinDate: joinDate.toISOString(),
+        planDurationDays: Number(formData.planDurationDays),
+        expiryDate: expiryDate.toISOString(),
         age: Number(formData.age),
         weight: Number(formData.weight),
         height: Number(formData.height),
         address: formData.address,
-        password: formData.password,
-        profilePhoto: formData.profilePhoto 
-    };
-    updateMember(updated);
-    setMembers(getMembers(gym.id));
-    setSelectedMember(updated);
-    alert("Member Profile Updated");
-  };
+        amountPaid: Number(formData.amountPaid),
+        profilePhoto: formData.profilePhoto,
+        gymId: gym.id,
+        isActive: true,
+        transformationPhotos: {},
+        supplementBills: [],
+        paymentHistory: []
+      };
 
-  const extendPlan = (days: number, customAmount?: number) => {
-    if (!selectedMember) return;
-    const currentExpiry = new Date(selectedMember.expiryDate);
-    const now = new Date();
-    const baseDate = currentExpiry > now ? currentExpiry : now;
-    const newExpiry = new Date(baseDate.getTime() + (days * 24 * 60 * 60 * 1000));
-    
-    let amount = customAmount ?? 0;
-    
-    if (customAmount === undefined) {
-      if (days === 30) amount = gym.pricing.oneMonth;
-      else if (days === 60) amount = gym.pricing.twoMonths;
-      else if (days === 90) amount = gym.pricing.threeMonths;
-      else if (days === 180) amount = gym.pricing.sixMonths;
-      else if (days === 365) amount = gym.pricing.twelveMonths;
-      else {
-        amount = Math.round((gym.pricing.oneMonth / 30) * days);
-      }
+      await addMember(newMember);
+      await refreshData();
+      setIsAddModalOpen(false);
+      setFormData(initialFormState);
+    } catch (err) {
+      alert('Error adding member');
+    } finally {
+      setProcessing(false);
     }
-
-    const updated = { 
-        ...selectedMember, 
-        expiryDate: newExpiry.toISOString(),
-        planDurationDays: days
-    };
-    
-    recordTransaction(gym.id, {
-        id: `TX-${Date.now()}`,
-        date: new Date().toISOString(),
-        amount: amount,
-        method: 'OFFLINE',
-        recordedBy: 'Manager',
-        category: TransactionCategory.MEMBERSHIP,
-        details: `Extension: ${days} days for ${selectedMember.name}`
-    });
-
-    updateMember(updated);
-    setMembers(getMembers(gym.id));
-    setSelectedMember(updated);
-    setManualExtendDays('');
-    setManualExtendAmount('');
-    alert(`Plan Extended by ${days} days. Payment of ₹${amount} recorded.`);
   };
 
-  const addSupplementBill = (e: React.FormEvent) => {
+  const updateMemberProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedMember) return;
-    const newSupp: SupplementBill = {
-        id: `SUP-${Date.now()}`,
-        itemName: suppForm.itemName,
-        qty: suppForm.qty,
-        days: suppForm.days,
-        amount: suppForm.amount,
-        date: new Date().toISOString()
-    };
-    
-    const updated = {
-        ...selectedMember,
-        supplementBills: [...selectedMember.supplementBills, newSupp]
-    };
+    setProcessing(true);
+    try {
+      const updated = { 
+          ...selectedMember, 
+          name: formData.name,
+          age: Number(formData.age),
+          weight: Number(formData.weight),
+          height: Number(formData.height),
+          address: formData.address,
+          password: formData.password,
+          profilePhoto: formData.profilePhoto 
+      };
+      await updateMember(updated);
+      await refreshData();
+      setSelectedMember(updated);
+      alert("Member Profile Updated");
+    } catch (err) {
+      alert("Failed to update profile");
+    } finally {
+      setProcessing(false);
+    }
+  };
 
-    recordTransaction(gym.id, {
-        id: `TX-${Date.now()}`,
-        date: new Date().toISOString(),
-        amount: suppForm.amount,
-        method: 'OFFLINE',
-        recordedBy: 'Manager',
-        category: TransactionCategory.SUPPLEMENT,
-        details: `Supplement: ${suppForm.itemName} x ${suppForm.qty} for ${selectedMember.name}`
-    });
+  const extendPlan = async (days: number, customAmount?: number) => {
+    if (!selectedMember) return;
+    setProcessing(true);
+    try {
+      const currentExpiry = new Date(selectedMember.expiryDate);
+      const now = new Date();
+      const baseDate = currentExpiry > now ? currentExpiry : now;
+      const newExpiry = new Date(baseDate.getTime() + (days * 24 * 60 * 60 * 1000));
+      
+      let amount = customAmount ?? 0;
+      
+      if (customAmount === undefined) {
+        if (days === 30) amount = gym.pricing.oneMonth;
+        else if (days === 60) amount = gym.pricing.twoMonths;
+        else if (days === 90) amount = gym.pricing.threeMonths;
+        else if (days === 180) amount = gym.pricing.sixMonths;
+        else if (days === 365) amount = gym.pricing.twelveMonths;
+        else {
+          amount = Math.round((gym.pricing.oneMonth / 30) * days);
+        }
+      }
 
-    updateMember(updated);
-    setMembers(getMembers(gym.id));
-    setSelectedMember(updated);
-    setSuppForm({ itemName: '', qty: 1, days: 0, amount: 0 });
+      const updated = { 
+          ...selectedMember, 
+          expiryDate: newExpiry.toISOString(),
+          planDurationDays: days
+      };
+      
+      await recordTransaction(gym.id, {
+          id: `TX-${Date.now()}`,
+          date: new Date().toISOString(),
+          amount: amount,
+          method: 'OFFLINE',
+          recordedBy: 'Manager',
+          category: TransactionCategory.MEMBERSHIP,
+          details: `Extension: ${days} days for ${selectedMember.name}`
+      });
+
+      await updateMember(updated);
+      await refreshData();
+      setSelectedMember(updated);
+      setManualExtendDays('');
+      setManualExtendAmount('');
+      alert(`Plan Extended by ${days} days. Payment of ₹${amount} recorded.`);
+    } catch (err) {
+      alert("Error extending plan");
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const addSupplementBill = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedMember) return;
+    setProcessing(true);
+    try {
+      const newSupp: SupplementBill = {
+          id: `SUP-${Date.now()}`,
+          itemName: suppForm.itemName,
+          qty: suppForm.qty,
+          days: suppForm.days,
+          amount: suppForm.amount,
+          date: new Date().toISOString()
+      };
+      
+      const updated = {
+          ...selectedMember,
+          supplementBills: [...selectedMember.supplementBills, newSupp]
+      };
+
+      await recordTransaction(gym.id, {
+          id: `TX-${Date.now()}`,
+          date: new Date().toISOString(),
+          amount: suppForm.amount,
+          method: 'OFFLINE',
+          recordedBy: 'Manager',
+          category: TransactionCategory.SUPPLEMENT,
+          details: `Supplement: ${suppForm.itemName} x ${suppForm.qty} for ${selectedMember.name}`
+      });
+
+      await updateMember(updated);
+      await refreshData();
+      setSelectedMember(updated);
+      setSuppForm({ itemName: '', qty: 1, days: 0, amount: 0 });
+    } catch (err) {
+      alert("Error adding bill");
+    } finally {
+      setProcessing(false);
+    }
   };
 
   const handleWhatsAppClick = async (member: Member) => {
@@ -243,7 +293,7 @@ const ManagerDashboard: React.FC = () => {
     const file = e.target.files?.[0];
     if (file) {
         const reader = new FileReader();
-        reader.onloadend = () => {
+        reader.onloadend = async () => {
             const base64 = reader.result as string;
             if (type === 'profile') {
                 setFormData(prev => ({ ...prev, profilePhoto: base64 }));
@@ -252,9 +302,13 @@ const ManagerDashboard: React.FC = () => {
                     ...selectedMember,
                     transformationPhotos: { ...selectedMember.transformationPhotos, [type]: base64 }
                 };
-                updateMember(updated);
-                setMembers(getMembers(gym.id));
-                setSelectedMember(updated);
+                try {
+                  await updateMember(updated);
+                  await refreshData();
+                  setSelectedMember(updated);
+                } catch (err) {
+                  alert("Failed to upload photo to cloud");
+                }
             }
         };
         reader.readAsDataURL(file);
@@ -275,7 +329,14 @@ const ManagerDashboard: React.FC = () => {
         </div>
       </div>
 
-      {activeTab === 'SETTINGS' && (
+      {loading && (
+        <div className="text-center py-20">
+          <i className="fas fa-circle-notch fa-spin text-4xl text-gym-accent mb-4"></i>
+          <p className="text-slate-400">Syncing with cloud...</p>
+        </div>
+      )}
+
+      {!loading && activeTab === 'SETTINGS' && (
         <Card title="Gym Configuration">
            <div className="space-y-4">
               <div>
@@ -285,15 +346,16 @@ const ManagerDashboard: React.FC = () => {
                   placeholder="Enter the terms and conditions for your gym members..."
                   value={gymTerms}
                   onChange={(e) => setGymTerms(e.target.value)}
+                  disabled={processing}
                 />
                 <p className="text-[10px] text-slate-500 mt-1">These will be visible to all members in their dashboard.</p>
               </div>
-              <Button onClick={handleUpdateGymTerms}>Save Settings</Button>
+              <Button onClick={handleUpdateGymTerms} isLoading={processing}>Save Settings</Button>
            </div>
         </Card>
       )}
 
-      {activeTab === 'MEMBERS' && (
+      {!loading && activeTab === 'MEMBERS' && (
         <>
           <div className="flex flex-col gap-4 bg-slate-800/40 p-4 rounded-xl border border-slate-700/50">
              <div className="flex flex-col md:flex-row gap-4 items-center">
@@ -382,7 +444,7 @@ const ManagerDashboard: React.FC = () => {
         </>
       )}
 
-      {activeTab === 'FINANCIALS' && (
+      {!loading && activeTab === 'FINANCIALS' && (
         <div className="space-y-6">
            <Card title="Financial Overview">
               <div className="flex flex-wrap gap-4 mb-6 items-end">
@@ -467,22 +529,22 @@ const ManagerDashboard: React.FC = () => {
                 <div className="w-20 h-20 bg-slate-700 rounded-full flex items-center justify-center overflow-hidden border-2 border-gym-accent shadow-inner">
                     {formData.profilePhoto ? <img src={formData.profilePhoto} className="w-full h-full object-cover" /> : <i className="fas fa-camera text-2xl text-slate-400"></i>}
                 </div>
-                <input type="file" className="hidden" accept="image/*" onChange={(e) => handlePhotoUpload(e, 'profile')} />
+                <input type="file" className="hidden" accept="image/*" onChange={(e) => handlePhotoUpload(e, 'profile')} disabled={processing} />
               </label>
            </div>
            <div className="grid grid-cols-2 gap-4">
-              <Input label="Member ID (Mobile)" required value={formData.id} onChange={e => setFormData({...formData, id: e.target.value})} />
-              <Input label="Full Name" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+              <Input label="Member ID (Mobile)" required value={formData.id} onChange={e => setFormData({...formData, id: e.target.value})} disabled={processing} />
+              <Input label="Full Name" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} disabled={processing} />
            </div>
            <div className="grid grid-cols-3 gap-2">
-              <Input label="Age" type="number" value={formData.age} onChange={e => setFormData({...formData, age: e.target.value})} />
-              <Input label="Weight (kg)" type="number" value={formData.weight} onChange={e => setFormData({...formData, weight: e.target.value})} />
-              <Input label="Height (cm)" type="number" value={formData.height} onChange={e => setFormData({...formData, height: e.target.value})} />
+              <Input label="Age" type="number" value={formData.age} onChange={e => setFormData({...formData, age: e.target.value})} disabled={processing} />
+              <Input label="Weight (kg)" type="number" value={formData.weight} onChange={e => setFormData({...formData, weight: e.target.value})} disabled={processing} />
+              <Input label="Height (cm)" type="number" value={formData.height} onChange={e => setFormData({...formData, height: e.target.value})} disabled={processing} />
            </div>
-           <Input label="Address" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value})} />
+           <Input label="Address" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value})} disabled={processing} />
            <div className="grid grid-cols-2 gap-4">
-              <Input label="Password" type="text" placeholder="Default: 1234" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} />
-              <Input label="Join Date" type="date" value={formData.joinDate} onChange={e => setFormData({...formData, joinDate: e.target.value})} />
+              <Input label="Password" type="text" placeholder="Default: 1234" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} disabled={processing} />
+              <Input label="Join Date" type="date" value={formData.joinDate} onChange={e => setFormData({...formData, joinDate: e.target.value})} disabled={processing} />
            </div>
            <div className="p-4 bg-slate-800 rounded-lg space-y-4 border border-slate-700">
               <Select 
@@ -505,10 +567,11 @@ const ManagerDashboard: React.FC = () => {
                     else if (days === 365) amt = gym?.pricing.twelveMonths;
                     setFormData({...formData, planDurationDays: days, amountPaid: String(amt)});
                 }}
+                disabled={processing}
               />
-              <Input label="Amount Paid (INR)" type="number" value={formData.amountPaid} onChange={e => setFormData({...formData, amountPaid: e.target.value})} />
+              <Input label="Amount Paid (INR)" type="number" value={formData.amountPaid} onChange={e => setFormData({...formData, amountPaid: e.target.value})} disabled={processing} />
            </div>
-           <Button type="submit" className="w-full">Register Member</Button>
+           <Button type="submit" className="w-full" isLoading={processing}>Register Member</Button>
         </form>
       </Modal>
 
@@ -538,7 +601,7 @@ const ManagerDashboard: React.FC = () => {
                     </div>
                     <label className="absolute bottom-0 right-0 w-8 h-8 bg-gym-accent rounded-full flex items-center justify-center cursor-pointer hover:bg-gym-accentHover transition-colors border-2 border-slate-800">
                        <i className="fas fa-camera text-xs text-white"></i>
-                       <input type="file" className="hidden" accept="image/*" onChange={(e) => handlePhotoUpload(e, 'profile')} />
+                       <input type="file" className="hidden" accept="image/*" onChange={(e) => handlePhotoUpload(e, 'profile')} disabled={processing} />
                     </label>
                     {formData.profilePhoto && (
                       <button 
@@ -553,25 +616,25 @@ const ManagerDashboard: React.FC = () => {
 
                <form onSubmit={updateMemberProfile} className="space-y-4">
                   <div className="grid grid-cols-2 gap-4">
-                     <Input label="Name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
-                     <Input label="Password" type="text" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} />
+                     <Input label="Name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} disabled={processing} />
+                     <Input label="Password" type="text" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} disabled={processing} />
                   </div>
                   <div className="grid grid-cols-3 gap-2">
-                     <Input label="Age" type="number" value={formData.age} onChange={e => setFormData({...formData, age: e.target.value})} />
-                     <Input label="Weight (kg)" type="number" value={formData.weight} onChange={e => setFormData({...formData, weight: e.target.value})} />
-                     <Input label="Height (cm)" type="number" value={formData.height} onChange={e => setFormData({...formData, height: e.target.value})} />
+                     <Input label="Age" type="number" value={formData.age} onChange={e => setFormData({...formData, age: e.target.value})} disabled={processing} />
+                     <Input label="Weight (kg)" type="number" value={formData.weight} onChange={e => setFormData({...formData, weight: e.target.value})} disabled={processing} />
+                     <Input label="Height (cm)" type="number" value={formData.height} onChange={e => setFormData({...formData, height: e.target.value})} disabled={processing} />
                   </div>
-                  <Input label="Address" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value})} />
-                  <Button type="submit" size="sm" className="w-full">Update Member Profile</Button>
+                  <Input label="Address" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value})} disabled={processing} />
+                  <Button type="submit" size="sm" className="w-full" isLoading={processing}>Update Member Profile</Button>
                </form>
                <div className="mt-4 pt-4 border-t border-slate-700">
                   <p className="text-sm font-medium text-slate-300 mb-2 font-bold">Renew / Extend Membership</p>
                   <div className="flex flex-wrap gap-2 mb-4">
-                     <Button size="sm" variant="secondary" onClick={() => extendPlan(30)}>+30 Days</Button>
-                     <Button size="sm" variant="secondary" onClick={() => extendPlan(60)}>+60 Days</Button>
-                     <Button size="sm" variant="secondary" onClick={() => extendPlan(90)}>+90 Days</Button>
-                     <Button size="sm" variant="secondary" onClick={() => extendPlan(180)}>+6 Months</Button>
-                     <Button size="sm" variant="secondary" onClick={() => extendPlan(365)}>+1 Year</Button>
+                     <Button size="sm" variant="secondary" onClick={() => extendPlan(30)} disabled={processing}>+30 Days</Button>
+                     <Button size="sm" variant="secondary" onClick={() => extendPlan(60)} disabled={processing}>+60 Days</Button>
+                     <Button size="sm" variant="secondary" onClick={() => extendPlan(90)} disabled={processing}>+90 Days</Button>
+                     <Button size="sm" variant="secondary" onClick={() => extendPlan(180)} disabled={processing}>+6 Months</Button>
+                     <Button size="sm" variant="secondary" onClick={() => extendPlan(365)} disabled={processing}>+1 Year</Button>
                   </div>
                   <div className="flex flex-wrap md:flex-nowrap gap-2 items-end">
                     <div className="flex-1">
@@ -581,6 +644,7 @@ const ManagerDashboard: React.FC = () => {
                         placeholder="Days" 
                         value={manualExtendDays} 
                         onChange={e => setManualExtendDays(e.target.value)}
+                        disabled={processing}
                       />
                     </div>
                     <div className="flex-1">
@@ -590,11 +654,13 @@ const ManagerDashboard: React.FC = () => {
                         placeholder="Amount" 
                         value={manualExtendAmount} 
                         onChange={e => setManualExtendAmount(e.target.value)}
+                        disabled={processing}
                       />
                     </div>
                     <Button 
                       size="sm" 
                       className="whitespace-nowrap h-[42px]"
+                      isLoading={processing}
                       onClick={() => {
                         const d = Number(manualExtendDays);
                         const a = manualExtendAmount ? Number(manualExtendAmount) : undefined;
@@ -623,7 +689,7 @@ const ManagerDashboard: React.FC = () => {
                                <span className="text-[10px]">Select Photo</span>
                             </div>
                         )}
-                        <input type="file" className="hidden" accept="image/*" onChange={e => handlePhotoUpload(e, 'before')} />
+                        <input type="file" className="hidden" accept="image/*" onChange={e => handlePhotoUpload(e, 'before')} disabled={processing} />
                      </label>
                   </div>
                   <div className="space-y-2">
@@ -637,7 +703,7 @@ const ManagerDashboard: React.FC = () => {
                                <span className="text-[10px]">Select Photo</span>
                             </div>
                         )}
-                        <input type="file" className="hidden" accept="image/*" onChange={e => handlePhotoUpload(e, 'after')} />
+                        <input type="file" className="hidden" accept="image/*" onChange={e => handlePhotoUpload(e, 'after')} disabled={processing} />
                      </label>
                   </div>
                </div>
@@ -647,10 +713,10 @@ const ManagerDashboard: React.FC = () => {
             <section className="space-y-4 p-4 bg-slate-800/50 rounded-xl border border-slate-700">
                <h3 className="text-lg font-bold text-white border-b border-slate-700 pb-2">3. Supplement Billing</h3>
                <form onSubmit={addSupplementBill} className="grid grid-cols-2 md:grid-cols-4 gap-2 items-end">
-                  <div className="col-span-1 md:col-span-1"><Input label="Item Name" required value={suppForm.itemName} onChange={e => setSuppForm({...suppForm, itemName: e.target.value})} /></div>
-                  <div className="col-span-1 md:col-span-1"><Input label="Qty" type="number" value={suppForm.qty} onChange={e => setSuppForm({...suppForm, qty: Number(e.target.value)})} /></div>
-                  <div className="col-span-1 md:col-span-1"><Input label="Amount (₹)" type="number" required value={suppForm.amount} onChange={e => setSuppForm({...suppForm, amount: Number(e.target.value)})} /></div>
-                  <div className="col-span-1 md:col-span-1"><Button type="submit" size="sm" className="w-full">Add Bill</Button></div>
+                  <div className="col-span-1 md:col-span-1"><Input label="Item Name" required value={suppForm.itemName} onChange={e => setSuppForm({...suppForm, itemName: e.target.value})} disabled={processing} /></div>
+                  <div className="col-span-1 md:col-span-1"><Input label="Qty" type="number" value={suppForm.qty} onChange={e => setSuppForm({...suppForm, qty: Number(e.target.value)})} disabled={processing} /></div>
+                  <div className="col-span-1 md:col-span-1"><Input label="Amount (₹)" type="number" required value={suppForm.amount} onChange={e => setSuppForm({...suppForm, amount: Number(e.target.value)})} disabled={processing} /></div>
+                  <div className="col-span-1 md:col-span-1"><Button type="submit" size="sm" className="w-full" isLoading={processing}>Add Bill</Button></div>
                </form>
                <div className="mt-4">
                   <p className="text-xs font-bold text-slate-500 mb-2 uppercase tracking-widest">Recent Supplement Sales</p>
